@@ -18,7 +18,7 @@ const fs = require("fs");
 const MOD_CHANNEL_ID = "1481306497236336733";
 const TRUSTED_ROLE_ID = "1517157408550420611";
 
-const YOUTUBE_HANDLE = "IzAnarchymc";
+const YOUTUBE_CHANNEL_ID = "UC1hjsoHtMeab2eiEW3Yg8bw";
 const YOUTUBE_NOTIFY_CHANNEL_ID = "1515784371150258226";
 
 const client = new Client({
@@ -35,21 +35,9 @@ client.once(Events.ClientReady, async () => {
     setInterval(checkYouTube, 60 * 1000);
 });
 
-async function getYouTubeChannelId() {
-    const res = await fetch(`https://www.youtube.com/@${YOUTUBE_HANDLE}`);
-    const html = await res.text();
-
-    const match = html.match(/"channelId":"(UC[^"]+)"/);
-    if (!match) throw new Error("Could not find YouTube channel ID.");
-
-    return match[1];
-}
-
 async function checkYouTube() {
     try {
-        const channelId = await getYouTubeChannelId();
-        const feedUrl = `https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`;
-
+        const feedUrl = `https://www.youtube.com/feeds/videos.xml?channel_id=${YOUTUBE_CHANNEL_ID}`;
         const res = await fetch(feedUrl);
         const xml = await res.text();
 
