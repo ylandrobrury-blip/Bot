@@ -43,11 +43,6 @@ async function checkYouTube() {
 
         const videos = [...xml.matchAll(/<entry>([\s\S]*?)<\/entry>/g)];
 
-        if (videos.length === 0) {
-            console.log("No YouTube videos found.");
-            return;
-        }
-
         let postedVideos = [];
 
         if (fs.existsSync("youtube.json")) {
@@ -59,7 +54,6 @@ async function checkYouTube() {
 
         for (const video of videos.reverse()) {
             const entry = video[1];
-
             const videoId = entry.match(/<yt:videoId>(.*?)<\/yt:videoId>/)?.[1];
             const title = entry.match(/<title>(.*?)<\/title>/)?.[1];
 
@@ -168,10 +162,16 @@ client.on(Events.InteractionCreate, async (interaction) => {
                     .setCustomId(`approve_${interaction.user.id}`)
                     .setLabel("Approve")
                     .setStyle(ButtonStyle.Success),
+
                 new ButtonBuilder()
-                    .setCustomId(`deny_${interaction.user.id}`)
+                    .setCustomId(`denyreason_${interaction.user.id}`)
                     .setLabel("Deny")
-                    .setStyle(ButtonStyle.Danger)
+                    .setStyle(ButtonStyle.Danger),
+
+                new ButtonBuilder()
+                    .setCustomId(`moreinfo_${interaction.user.id}`)
+                    .setLabel("More Info")
+                    .setStyle(ButtonStyle.Secondary)
             );
 
             const channel = await client.channels.fetch(MOD_CHANNEL_ID);
@@ -190,26 +190,85 @@ client.on(Events.InteractionCreate, async (interaction) => {
             await member.roles.add(TRUSTED_ROLE_ID);
 
             try {
-                await member.send("Your Trusted application has been **accepted**! You received the **Trusted member** role.");
+                await member.send("✅ Your Trusted application has been **accepted**! You received the **Trusted member** role.");
             } catch {}
 
             await interaction.update({
-                content: `Accepted <@${userId}> and gave them Trusted member.`,
+                content: `✅ Accepted <@${userId}> and gave them Trusted member.`,
                 embeds: interaction.message.embeds,
                 components: []
             });
         }
 
-        if (interaction.isButton() && interaction.customId.startsWith("deny_")) {
-            const userId = interaction.customId.replace("deny_", "");
+        if (interaction.isButton() && interaction.customId.startsWith("denyreason_")) {
+            const userId = interaction.customId.replace("denyreason_", "");
+
+            const modal = new ModalBuilder()
+                .setCustomId(`deny_modal_${userId}`)
+                .setTitle("Deny Application");
+
+            const reasonInput = new TextInputBuilder()
+                .setCustomId("deny_reason")
+                .setLabel("Why are you denying this application?")
+                .setStyle(TextInputStyle.Paragraph)
+                .setRequired(true);
+
+            modal.addComponents(
+                new ActionRowBuilder().addComponents(reasonInput)
+            );
+
+            await interaction.showModal(modal);
+        }
+
+        if (interaction.isModalSubmit() && interaction.customId.startsWith("deny_modal_")) {
+            const userId = interaction.customId.replace("deny_modal_", "");
+            const reason = interaction.fields.getTextInputValue("deny_reason");
+
             const user = await client.users.fetch(userId);
 
             try {
-                await user.send("Your Trusted application has been **denied**.");
+                await user.send(`❌ Your Trusted application has been **denied**.\n\n**Reason:**\n${reason}`);
             } catch {}
 
             await interaction.update({
-                content: `Denied <@${userId}>.`,
+                content: `❌ Denied <@${userId}>.\n\n**Reason:** ${reason}`,
+                embeds: interaction.message.embeds,
+                components: []
+            });
+        }
+
+        if (interaction.isButton() && interaction.customId.startsWith("moreinfo_")) {
+            const userId = interaction.customId.replace("moreinfo_", "");
+
+            const modal = new ModalBuilder()
+                .setCustomId(`moreinfo_modal_${userId}`)
+                .setTitle("Request More Info");
+
+            const infoInput = new TextInputBuilder()
+                .setCustomId("moreinfo_message")
+                .setLabel("What extra info do you need?")
+                .setStyle(TextInputStyle.Paragraph)
+                .setRequired(true);
+
+            modal.addComponents(
+                new ActionRowBuilder().addComponents(infoInput)
+            );
+
+            await interaction.showModal(modal);
+        }
+
+        if (interaction.isModalSubmit() && interaction.customId.startsWith("moreinfo_modal_")) {
+            const userId = interaction.customId.replace("moreinfo_modal_", "");
+            const message = interaction.fields.getTextInputValue("moreinfo_message");
+
+            const user = await client.users.fetch(userId);
+
+            try {
+                await user.send(`⏳ Your Trusted application needs **more information**.\n\n**Message from moderators:**\n${message}`);
+            } catch {}
+
+            await interaction.update({
+                content: `⏳ Asked <@${userId}> for more information.\n\n**Message:** ${message}`,
                 embeds: interaction.message.embeds,
                 components: []
             });
