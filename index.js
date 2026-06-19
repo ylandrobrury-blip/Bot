@@ -25,6 +25,7 @@ const YOUTUBE_NOTIFY_CHANNEL_ID = "1515784371150258226";
 // ===== Files =====
 const QUEUE_FILE = "queue.json";
 const YOUTUBE_FILE = "youtube.json";
+const ATTEMPTS_FILE = "attempts.json";
 
 // ===== Queue Data =====
 let queueData = {
@@ -34,18 +35,28 @@ let queueData = {
     users: []
 };
 
-function loadQueue() {
-    if (!fs.existsSync(QUEUE_FILE)) saveQueue();
-
-    try {
-        queueData = JSON.parse(fs.readFileSync(QUEUE_FILE, "utf8"));
-    } catch {
-        saveQueue();
+function ensureFile(file, defaultData) {
+    if (!fs.existsSync(file)) {
+        fs.writeFileSync(file, JSON.stringify(defaultData, null, 2));
     }
+}
+
+function loadQueue() {
+    ensureFile(QUEUE_FILE, queueData);
+    queueData = JSON.parse(fs.readFileSync(QUEUE_FILE, "utf8"));
 }
 
 function saveQueue() {
     fs.writeFileSync(QUEUE_FILE, JSON.stringify(queueData, null, 2));
+}
+
+function loadAttempts() {
+    ensureFile(ATTEMPTS_FILE, {});
+    return JSON.parse(fs.readFileSync(ATTEMPTS_FILE, "utf8"));
+}
+
+function saveAttempts(data) {
+    fs.writeFileSync(ATTEMPTS_FILE, JSON.stringify(data, null, 2));
 }
 
 function getQueueEmbed() {
@@ -85,18 +96,14 @@ async function updateQueueMessage(client) {
     }
 }
 
-// ===== Auto Review System =====
+// ===== Auto Review =====
 function autoReviewApplication(answers) {
     let score = 0;
     const reasons = [];
-
     const allText = answers.join(" ").toLowerCase();
     const totalLength = answers.join("").length;
 
-    const trollWords = [
-        "ban", "banned", "fuck", "stupid", "idk", "dont know",
-        "v", "f", "yes", "no", "lol", "lmao", "haha", "trust me bro"
-    ];
+    const trollWords = ["idk", "lol", "lmao", "haha", "trust me bro", "fuck", "stupid", "yes", "no"];
 
     for (const answer of answers) {
         const clean = answer.trim().toLowerCase();
@@ -112,22 +119,18 @@ function autoReviewApplication(answers) {
     }
 
     if (totalLength >= 400) score += 2;
+
     if (totalLength < 120) {
         score -= 4;
         reasons.push("Application is not detailed enough.");
     }
 
-    let trollDetected = false;
-
     for (const word of trollWords) {
         if (allText.includes(word)) {
-            trollDetected = true;
+            score -= 4;
+            reasons.push("Answers look unserious.");
+            break;
         }
-    }
-
-    if (trollDetected) {
-        score -= 4;
-        reasons.push("Answers look unserious or troll-like.");
     }
 
     if (
@@ -135,7 +138,6 @@ function autoReviewApplication(answers) {
         allText.includes("honest") ||
         allText.includes("respect") ||
         allText.includes("fair") ||
-        allText.includes("learned") ||
         allText.includes("responsible")
     ) {
         score += 3;
@@ -153,7 +155,7 @@ function autoReviewApplication(answers) {
     }
 
     if (reasons.length === 0) {
-        reasons.push("Answers look acceptable, but a moderator should still review them.");
+        reasons.push("Answers look okay, but staff should still review.");
     }
 
     return {
@@ -164,7 +166,7 @@ function autoReviewApplication(answers) {
     };
 }
 
-// ===== Discord Client =====
+// ===== Client =====
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -185,7 +187,7 @@ client.once(Events.ClientReady, async () => {
     }, 5 * 60 * 1000);
 });
 
-// ===== YouTube System =====
+// ===== YouTube =====
 async function checkYouTube() {
     try {
         const feedUrl = `https://www.youtube.com/feeds/videos.xml?channel_id=${YOUTUBE_CHANNEL_ID}`;
@@ -194,18 +196,15 @@ async function checkYouTube() {
 
         const videos = [...xml.matchAll(/<entry>([\s\S]*?)<\/entry>/g)];
 
-        let postedVideos = [];
+        ensureFile(YOUTUBE_FILE, { postedVideos: [] });
 
-        if (fs.existsSync(YOUTUBE_FILE)) {
-            const data = JSON.parse(fs.readFileSync(YOUTUBE_FILE, "utf8"));
-            postedVideos = data.postedVideos || [];
-        }
+        const data = JSON.parse(fs.readFileSync(YOUTUBE_FILE, "utf8"));
+        const postedVideos = data.postedVideos || [];
 
         const channel = await client.channels.fetch(YOUTUBE_NOTIFY_CHANNEL_ID);
 
         for (const video of videos.reverse()) {
             const entry = video[1];
-
             const videoId = entry.match(/<yt:videoId>(.*?)<\/yt:videoId>/)?.[1];
             const title = entry.match(/<title>(.*?)<\/title>/)?.[1];
 
@@ -234,7 +233,6 @@ async function checkYouTube() {
 // ===== Interactions =====
 client.on(Events.InteractionCreate, async (interaction) => {
     try {
-        // ===== Slash Commands =====
         if (interaction.isChatInputCommand()) {
 
             if (interaction.commandName === "setuptrusted") {
@@ -246,7 +244,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
                 const row = new ActionRowBuilder().addComponents(button);
 
                 await interaction.reply({
-                    content: "Click the button below to apply for **Trusted member**.",
+                    content: "Click below to apply for **Trusted member**.",
                     components: [row]
                 });
             }
@@ -341,14 +339,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
                     await updateQueueMessage(client);
 
                     await interaction.reply({
-                        content: `${user} has been removed from the queue. Everyone moved up one place.`,
+                        content: `${user} has been removed. Everyone moved up one place.`,
                         flags: 64
                     });
                 }
             }
         }
 
-        // ===== Join Queue Button =====
         if (interaction.isButton() && interaction.customId === "join_queue") {
             if (!queueData.open) {
                 return interaction.reply({
@@ -375,11 +372,20 @@ client.on(Events.InteractionCreate, async (interaction) => {
             });
         }
 
-        // ===== Trusted Apply Button =====
         if (interaction.isButton() && interaction.customId === "trusted_apply") {
+            const attempts = loadAttempts();
+            const used = attempts[interaction.user.id] || 0;
+
+            if (used >= 3) {
+                return interaction.reply({
+                    content: "❌ You have already used all **3 chances** to apply for Trusted member.",
+                    flags: 64
+                });
+            }
+
             const modal = new ModalBuilder()
                 .setCustomId("trusted_modal")
-                .setTitle("Trusted Application");
+                .setTitle(`Trusted Application (${used + 1}/3)`);
 
             const q1 = new TextInputBuilder()
                 .setCustomId("q1")
@@ -422,8 +428,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
             await interaction.showModal(modal);
         }
 
-        // ===== Trusted Submit =====
         if (interaction.isModalSubmit() && interaction.customId === "trusted_modal") {
+            const attempts = loadAttempts();
+            attempts[interaction.user.id] = (attempts[interaction.user.id] || 0) + 1;
+            saveAttempts(attempts);
+
             const answers = [
                 interaction.fields.getTextInputValue("q1"),
                 interaction.fields.getTextInputValue("q2"),
@@ -437,7 +446,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
             const embed = new EmbedBuilder()
                 .setTitle("New Trusted Application")
                 .setColor(review.color)
-                .setDescription(`Applicant: ${interaction.user}\nUser ID: ${interaction.user.id}`)
+                .setDescription(`Applicant: ${interaction.user}\nUser ID: ${interaction.user.id}\nAttempt: **${attempts[interaction.user.id]}/3**`)
                 .addFields(
                     { name: "🤖 Bot Recommendation", value: `${review.recommendation}\nScore: **${review.score}/10**\n${review.reason}` },
                     { name: "Why do you truly deserve Trusted?", value: answers[0] },
@@ -469,12 +478,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
             await channel.send({ embeds: [embed], components: [row] });
 
             await interaction.reply({
-                content: "Your Trusted application has been sent.",
+                content: `Your Trusted application has been sent. Attempts used: **${attempts[interaction.user.id]}/3**.`,
                 flags: 64
             });
         }
 
-        // ===== Approve =====
         if (interaction.isButton() && interaction.customId.startsWith("approve_")) {
             const userId = interaction.customId.replace("approve_", "");
             const member = await interaction.guild.members.fetch(userId);
@@ -492,7 +500,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
             });
         }
 
-        // ===== Deny Button =====
         if (interaction.isButton() && interaction.customId.startsWith("denyreason_")) {
             const userId = interaction.customId.replace("denyreason_", "");
 
@@ -506,14 +513,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
                 .setStyle(TextInputStyle.Paragraph)
                 .setRequired(true);
 
-            modal.addComponents(
-                new ActionRowBuilder().addComponents(reasonInput)
-            );
+            modal.addComponents(new ActionRowBuilder().addComponents(reasonInput));
 
             await interaction.showModal(modal);
         }
 
-        // ===== Deny Submit =====
         if (interaction.isModalSubmit() && interaction.customId.startsWith("deny_modal_")) {
             const userId = interaction.customId.replace("deny_modal_", "");
             const reason = interaction.fields.getTextInputValue("deny_reason");
@@ -531,7 +535,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
             });
         }
 
-        // ===== More Info Button =====
         if (interaction.isButton() && interaction.customId.startsWith("moreinfo_")) {
             const userId = interaction.customId.replace("moreinfo_", "");
 
@@ -545,14 +548,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
                 .setStyle(TextInputStyle.Paragraph)
                 .setRequired(true);
 
-            modal.addComponents(
-                new ActionRowBuilder().addComponents(infoInput)
-            );
+            modal.addComponents(new ActionRowBuilder().addComponents(infoInput));
 
             await interaction.showModal(modal);
         }
 
-        // ===== More Info Submit =====
         if (interaction.isModalSubmit() && interaction.customId.startsWith("moreinfo_modal_")) {
             const userId = interaction.customId.replace("moreinfo_modal_", "");
             const message = interaction.fields.getTextInputValue("moreinfo_message");
