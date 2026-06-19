@@ -15,16 +15,18 @@ const {
 
 const fs = require("fs");
 
-// IDS
+// ===== IDs =====
 const MOD_CHANNEL_ID = "1481306497236336733";
 const TRUSTED_ROLE_ID = "1517157408550420611";
 
 const YOUTUBE_CHANNEL_ID = "UC1hjsoHtMeab2eiEW3Yg8bw";
 const YOUTUBE_NOTIFY_CHANNEL_ID = "1515784371150258226";
 
-// QUEUE DATA
+// ===== Files =====
 const QUEUE_FILE = "queue.json";
+const YOUTUBE_FILE = "youtube.json";
 
+// ===== Queue Data =====
 let queueData = {
     channelId: null,
     messageId: null,
@@ -33,8 +35,12 @@ let queueData = {
 };
 
 function loadQueue() {
-    if (fs.existsSync(QUEUE_FILE)) {
+    if (!fs.existsSync(QUEUE_FILE)) saveQueue();
+
+    try {
         queueData = JSON.parse(fs.readFileSync(QUEUE_FILE, "utf8"));
+    } catch {
+        saveQueue();
     }
 }
 
@@ -74,12 +80,91 @@ async function updateQueueMessage(client) {
             embeds: [getQueueEmbed()],
             components: [row]
         });
-
     } catch (error) {
         console.log("Queue update error:", error.message);
     }
 }
 
+// ===== Auto Review System =====
+function autoReviewApplication(answers) {
+    let score = 0;
+    const reasons = [];
+
+    const allText = answers.join(" ").toLowerCase();
+    const totalLength = answers.join("").length;
+
+    const trollWords = [
+        "ban", "banned", "fuck", "stupid", "idk", "dont know",
+        "v", "f", "yes", "no", "lol", "lmao", "haha", "trust me bro"
+    ];
+
+    for (const answer of answers) {
+        const clean = answer.trim().toLowerCase();
+
+        if (clean.length >= 80) score += 2;
+        else if (clean.length >= 35) score += 1;
+        else {
+            score -= 2;
+            reasons.push("One or more answers are too short.");
+        }
+
+        if (clean.split(" ").length >= 12) score += 1;
+    }
+
+    if (totalLength >= 400) score += 2;
+    if (totalLength < 120) {
+        score -= 4;
+        reasons.push("Application is not detailed enough.");
+    }
+
+    let trollDetected = false;
+
+    for (const word of trollWords) {
+        if (allText.includes(word)) {
+            trollDetected = true;
+        }
+    }
+
+    if (trollDetected) {
+        score -= 4;
+        reasons.push("Answers look unserious or troll-like.");
+    }
+
+    if (
+        allText.includes("rules") ||
+        allText.includes("honest") ||
+        allText.includes("respect") ||
+        allText.includes("fair") ||
+        allText.includes("learned") ||
+        allText.includes("responsible")
+    ) {
+        score += 3;
+    }
+
+    let recommendation = "⚠️ Needs Review";
+    let color = "Yellow";
+
+    if (score >= 8) {
+        recommendation = "✅ Recommended Accept";
+        color = "Green";
+    } else if (score <= 1) {
+        recommendation = "❌ Recommended Deny";
+        color = "Red";
+    }
+
+    if (reasons.length === 0) {
+        reasons.push("Answers look acceptable, but a moderator should still review them.");
+    }
+
+    return {
+        score,
+        recommendation,
+        color,
+        reason: reasons.join("\n")
+    };
+}
+
+// ===== Discord Client =====
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -100,7 +185,7 @@ client.once(Events.ClientReady, async () => {
     }, 5 * 60 * 1000);
 });
 
-// YOUTUBE SYSTEM
+// ===== YouTube System =====
 async function checkYouTube() {
     try {
         const feedUrl = `https://www.youtube.com/feeds/videos.xml?channel_id=${YOUTUBE_CHANNEL_ID}`;
@@ -111,8 +196,8 @@ async function checkYouTube() {
 
         let postedVideos = [];
 
-        if (fs.existsSync("youtube.json")) {
-            const data = JSON.parse(fs.readFileSync("youtube.json", "utf8"));
+        if (fs.existsSync(YOUTUBE_FILE)) {
+            const data = JSON.parse(fs.readFileSync(YOUTUBE_FILE, "utf8"));
             postedVideos = data.postedVideos || [];
         }
 
@@ -139,21 +224,19 @@ async function checkYouTube() {
             }
         }
 
-        fs.writeFileSync("youtube.json", JSON.stringify({ postedVideos }, null, 2));
+        fs.writeFileSync(YOUTUBE_FILE, JSON.stringify({ postedVideos }, null, 2));
 
     } catch (error) {
         console.log("YouTube check error:", error.message);
     }
 }
 
-// INTERACTIONS
+// ===== Interactions =====
 client.on(Events.InteractionCreate, async (interaction) => {
     try {
-
-        // SLASH COMMANDS
+        // ===== Slash Commands =====
         if (interaction.isChatInputCommand()) {
 
-            // TRUSTED SETUP
             if (interaction.commandName === "setuptrusted") {
                 const button = new ButtonBuilder()
                     .setCustomId("trusted_apply")
@@ -168,7 +251,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
                 });
             }
 
-            // SETUP QUEUE
             if (interaction.commandName === "setupqueue") {
                 const channel = interaction.options.getChannel("channel");
 
@@ -184,7 +266,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
                 });
             }
 
-            // QUEUE COMMANDS
             if (interaction.commandName === "queue") {
                 const subcommand = interaction.options.getSubcommand();
 
@@ -267,7 +348,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
             }
         }
 
-        // JOIN QUEUE BUTTON
+        // ===== Join Queue Button =====
         if (interaction.isButton() && interaction.customId === "join_queue") {
             if (!queueData.open) {
                 return interaction.reply({
@@ -294,7 +375,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
             });
         }
 
-        // TRUSTED APPLY BUTTON
+        // ===== Trusted Apply Button =====
         if (interaction.isButton() && interaction.customId === "trusted_apply") {
             const modal = new ModalBuilder()
                 .setCustomId("trusted_modal")
@@ -341,18 +422,29 @@ client.on(Events.InteractionCreate, async (interaction) => {
             await interaction.showModal(modal);
         }
 
-        // TRUSTED MODAL SUBMIT
+        // ===== Trusted Submit =====
         if (interaction.isModalSubmit() && interaction.customId === "trusted_modal") {
+            const answers = [
+                interaction.fields.getTextInputValue("q1"),
+                interaction.fields.getTextInputValue("q2"),
+                interaction.fields.getTextInputValue("q3"),
+                interaction.fields.getTextInputValue("q4"),
+                interaction.fields.getTextInputValue("q5")
+            ];
+
+            const review = autoReviewApplication(answers);
+
             const embed = new EmbedBuilder()
                 .setTitle("New Trusted Application")
-                .setColor("Blue")
+                .setColor(review.color)
                 .setDescription(`Applicant: ${interaction.user}\nUser ID: ${interaction.user.id}`)
                 .addFields(
-                    { name: "Why do you truly deserve Trusted?", value: interaction.fields.getTextInputValue("q1") },
-                    { name: "What does trust mean to you?", value: interaction.fields.getTextInputValue("q2") },
-                    { name: "If your friend breaks rules, what do you do?", value: interaction.fields.getTextInputValue("q3") },
-                    { name: "Tell us a mistake you made and learned from.", value: interaction.fields.getTextInputValue("q4") },
-                    { name: "If we deny you, how will you react?", value: interaction.fields.getTextInputValue("q5") }
+                    { name: "🤖 Bot Recommendation", value: `${review.recommendation}\nScore: **${review.score}/10**\n${review.reason}` },
+                    { name: "Why do you truly deserve Trusted?", value: answers[0] },
+                    { name: "What does trust mean to you?", value: answers[1] },
+                    { name: "If your friend breaks rules, what do you do?", value: answers[2] },
+                    { name: "Tell us a mistake you made and learned from.", value: answers[3] },
+                    { name: "If we deny you, how will you react?", value: answers[4] }
                 )
                 .setTimestamp();
 
@@ -382,7 +474,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
             });
         }
 
-        // APPROVE
+        // ===== Approve =====
         if (interaction.isButton() && interaction.customId.startsWith("approve_")) {
             const userId = interaction.customId.replace("approve_", "");
             const member = await interaction.guild.members.fetch(userId);
@@ -400,7 +492,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
             });
         }
 
-        // DENY WITH REASON BUTTON
+        // ===== Deny Button =====
         if (interaction.isButton() && interaction.customId.startsWith("denyreason_")) {
             const userId = interaction.customId.replace("denyreason_", "");
 
@@ -421,7 +513,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
             await interaction.showModal(modal);
         }
 
-        // DENY MODAL SUBMIT
+        // ===== Deny Submit =====
         if (interaction.isModalSubmit() && interaction.customId.startsWith("deny_modal_")) {
             const userId = interaction.customId.replace("deny_modal_", "");
             const reason = interaction.fields.getTextInputValue("deny_reason");
@@ -439,7 +531,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
             });
         }
 
-        // MORE INFO BUTTON
+        // ===== More Info Button =====
         if (interaction.isButton() && interaction.customId.startsWith("moreinfo_")) {
             const userId = interaction.customId.replace("moreinfo_", "");
 
@@ -460,7 +552,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
             await interaction.showModal(modal);
         }
 
-        // MORE INFO MODAL SUBMIT
+        // ===== More Info Submit =====
         if (interaction.isModalSubmit() && interaction.customId.startsWith("moreinfo_modal_")) {
             const userId = interaction.customId.replace("moreinfo_modal_", "");
             const message = interaction.fields.getTextInputValue("moreinfo_message");
