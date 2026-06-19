@@ -15,11 +15,70 @@ const {
 
 const fs = require("fs");
 
+// IDS
 const MOD_CHANNEL_ID = "1481306497236336733";
 const TRUSTED_ROLE_ID = "1517157408550420611";
 
 const YOUTUBE_CHANNEL_ID = "UC1hjsoHtMeab2eiEW3Yg8bw";
 const YOUTUBE_NOTIFY_CHANNEL_ID = "1515784371150258226";
+
+// QUEUE DATA
+const QUEUE_FILE = "queue.json";
+
+let queueData = {
+    channelId: null,
+    messageId: null,
+    open: false,
+    users: []
+};
+
+function loadQueue() {
+    if (fs.existsSync(QUEUE_FILE)) {
+        queueData = JSON.parse(fs.readFileSync(QUEUE_FILE, "utf8"));
+    }
+}
+
+function saveQueue() {
+    fs.writeFileSync(QUEUE_FILE, JSON.stringify(queueData, null, 2));
+}
+
+function getQueueEmbed() {
+    const list = queueData.users.length === 0
+        ? "Nobody is in the queue."
+        : queueData.users.map((id, index) => `${index + 1}. <@${id}>`).join("\n");
+
+    return new EmbedBuilder()
+        .setTitle(queueData.open ? "🟢 Queue Open" : "🔴 Queue Closed")
+        .setDescription(list)
+        .setColor(queueData.open ? "Green" : "Red")
+        .setFooter({ text: `Total people: ${queueData.users.length}` })
+        .setTimestamp();
+}
+
+async function updateQueueMessage(client) {
+    if (!queueData.channelId || !queueData.messageId) return;
+
+    try {
+        const channel = await client.channels.fetch(queueData.channelId);
+        const message = await channel.messages.fetch(queueData.messageId);
+
+        const button = new ButtonBuilder()
+            .setCustomId("join_queue")
+            .setLabel("Join Queue")
+            .setStyle(ButtonStyle.Primary)
+            .setDisabled(!queueData.open);
+
+        const row = new ActionRowBuilder().addComponents(button);
+
+        await message.edit({
+            embeds: [getQueueEmbed()],
+            components: [row]
+        });
+
+    } catch (error) {
+        console.log("Queue update error:", error.message);
+    }
+}
 
 const client = new Client({
     intents: [
@@ -31,10 +90,17 @@ const client = new Client({
 client.once(Events.ClientReady, async () => {
     console.log(`Bot is online as ${client.user.tag}`);
 
+    loadQueue();
+
     checkYouTube();
     setInterval(checkYouTube, 60 * 1000);
+
+    setInterval(() => {
+        updateQueueMessage(client);
+    }, 5 * 60 * 1000);
 });
 
+// YOUTUBE SYSTEM
 async function checkYouTube() {
     try {
         const feedUrl = `https://www.youtube.com/feeds/videos.xml?channel_id=${YOUTUBE_CHANNEL_ID}`;
@@ -54,6 +120,7 @@ async function checkYouTube() {
 
         for (const video of videos.reverse()) {
             const entry = video[1];
+
             const videoId = entry.match(/<yt:videoId>(.*?)<\/yt:videoId>/)?.[1];
             const title = entry.match(/<title>(.*?)<\/title>/)?.[1];
 
@@ -79,9 +146,14 @@ async function checkYouTube() {
     }
 }
 
+// INTERACTIONS
 client.on(Events.InteractionCreate, async (interaction) => {
     try {
+
+        // SLASH COMMANDS
         if (interaction.isChatInputCommand()) {
+
+            // TRUSTED SETUP
             if (interaction.commandName === "setuptrusted") {
                 const button = new ButtonBuilder()
                     .setCustomId("trusted_apply")
@@ -95,8 +167,134 @@ client.on(Events.InteractionCreate, async (interaction) => {
                     components: [row]
                 });
             }
+
+            // SETUP QUEUE
+            if (interaction.commandName === "setupqueue") {
+                const channel = interaction.options.getChannel("channel");
+
+                queueData.channelId = channel.id;
+                queueData.messageId = null;
+                queueData.open = false;
+                queueData.users = [];
+                saveQueue();
+
+                await interaction.reply({
+                    content: `Queue channel set to ${channel}.`,
+                    flags: 64
+                });
+            }
+
+            // QUEUE COMMANDS
+            if (interaction.commandName === "queue") {
+                const subcommand = interaction.options.getSubcommand();
+
+                if (subcommand === "open") {
+                    if (!queueData.channelId) {
+                        return interaction.reply({
+                            content: "Use `/setupqueue` first.",
+                            flags: 64
+                        });
+                    }
+
+                    queueData.open = true;
+                    saveQueue();
+
+                    const channel = await client.channels.fetch(queueData.channelId);
+
+                    const button = new ButtonBuilder()
+                        .setCustomId("join_queue")
+                        .setLabel("Join Queue")
+                        .setStyle(ButtonStyle.Primary);
+
+                    const row = new ActionRowBuilder().addComponents(button);
+
+                    const msg = await channel.send({
+                        content: "@everyone Queue is now open!",
+                        embeds: [getQueueEmbed()],
+                        components: [row],
+                        allowedMentions: { parse: ["everyone"] }
+                    });
+
+                    queueData.messageId = msg.id;
+                    saveQueue();
+
+                    await interaction.reply({
+                        content: "Queue opened.",
+                        flags: 64
+                    });
+                }
+
+                if (subcommand === "close") {
+                    queueData.open = false;
+                    queueData.users = [];
+                    saveQueue();
+
+                    await updateQueueMessage(client);
+
+                    await interaction.reply({
+                        content: "Queue closed and everyone was removed from the queue.",
+                        flags: 64
+                    });
+                }
+
+                if (subcommand === "list") {
+                    await interaction.reply({
+                        embeds: [getQueueEmbed()],
+                        flags: 64
+                    });
+                }
+
+                if (subcommand === "leave") {
+                    const user = interaction.options.getUser("user");
+
+                    if (!queueData.users.includes(user.id)) {
+                        return interaction.reply({
+                            content: `${user} is not in the queue.`,
+                            flags: 64
+                        });
+                    }
+
+                    queueData.users = queueData.users.filter(id => id !== user.id);
+                    saveQueue();
+
+                    await updateQueueMessage(client);
+
+                    await interaction.reply({
+                        content: `${user} has been removed from the queue. Everyone moved up one place.`,
+                        flags: 64
+                    });
+                }
+            }
         }
 
+        // JOIN QUEUE BUTTON
+        if (interaction.isButton() && interaction.customId === "join_queue") {
+            if (!queueData.open) {
+                return interaction.reply({
+                    content: "The queue is closed.",
+                    flags: 64
+                });
+            }
+
+            if (queueData.users.includes(interaction.user.id)) {
+                return interaction.reply({
+                    content: "You are already in the queue.",
+                    flags: 64
+                });
+            }
+
+            queueData.users.push(interaction.user.id);
+            saveQueue();
+
+            await updateQueueMessage(client);
+
+            await interaction.reply({
+                content: `You joined the queue. Your position is **${queueData.users.length}**.`,
+                flags: 64
+            });
+        }
+
+        // TRUSTED APPLY BUTTON
         if (interaction.isButton() && interaction.customId === "trusted_apply") {
             const modal = new ModalBuilder()
                 .setCustomId("trusted_modal")
@@ -143,6 +341,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
             await interaction.showModal(modal);
         }
 
+        // TRUSTED MODAL SUBMIT
         if (interaction.isModalSubmit() && interaction.customId === "trusted_modal") {
             const embed = new EmbedBuilder()
                 .setTitle("New Trusted Application")
@@ -183,6 +382,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
             });
         }
 
+        // APPROVE
         if (interaction.isButton() && interaction.customId.startsWith("approve_")) {
             const userId = interaction.customId.replace("approve_", "");
             const member = await interaction.guild.members.fetch(userId);
@@ -200,6 +400,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
             });
         }
 
+        // DENY WITH REASON BUTTON
         if (interaction.isButton() && interaction.customId.startsWith("denyreason_")) {
             const userId = interaction.customId.replace("denyreason_", "");
 
@@ -220,6 +421,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
             await interaction.showModal(modal);
         }
 
+        // DENY MODAL SUBMIT
         if (interaction.isModalSubmit() && interaction.customId.startsWith("deny_modal_")) {
             const userId = interaction.customId.replace("deny_modal_", "");
             const reason = interaction.fields.getTextInputValue("deny_reason");
@@ -237,6 +439,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
             });
         }
 
+        // MORE INFO BUTTON
         if (interaction.isButton() && interaction.customId.startsWith("moreinfo_")) {
             const userId = interaction.customId.replace("moreinfo_", "");
 
@@ -257,6 +460,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
             await interaction.showModal(modal);
         }
 
+        // MORE INFO MODAL SUBMIT
         if (interaction.isModalSubmit() && interaction.customId.startsWith("moreinfo_modal_")) {
             const userId = interaction.customId.replace("moreinfo_modal_", "");
             const message = interaction.fields.getTextInputValue("moreinfo_message");
